@@ -30,8 +30,12 @@
 #include <iostream>
 
 #define TINYEXR_IMPLEMENTATION
+#include <tclap/CmdLine.h>
 #include <tinyexr.h>
 
+bool SaveEXR(const float* rgb, int width, int height, const char* outfilename);
+
+// Parnoramic parametrisation: https://vgl.ict.usc.edu/Data/HighResProbes/
 void pano_getThetaPhi(float u, float v, float& theta, float& phi)
 {
     // u in [0..2]
@@ -49,7 +53,7 @@ void pano_getDir(float u, float v, float& dx, float& dy, float& dz)
 
     dx = sin(phi) * sin(theta);
     dy = cos(phi);
-    dz = -sin(phi)*cos(theta);
+    dz = -sin(phi) * cos(theta);
 }
 
 void pano_getUV(float dx, float dy, float dz, float& u, float& v)
@@ -60,9 +64,7 @@ void pano_getUV(float dx, float dy, float dz, float& u, float& v)
     u /= 2.f;
 }
 
-/*
- Thus, if we consider the images to be normalized to have coordinates u=[-1,1], v=[-1,1], we have theta=atan2(v,u), phi=pi*sqrt(u*u+v*v). The unit vector pointing in the corresponding direction is obtained by rotating (0,0,-1) by phi degrees around the y (up) axis and then theta degrees around the -z (forward) axis. If for a direction vector in the world (Dx, Dy, Dz), the corresponding (u,v) coordinate in the light probe image is (Dx*r,Dy*r) where r=(1/pi)*acos(Dz)/sqrt(Dx^2 + Dy^2).
- */
+// Probe parametrisation: https://www.pauldebevec.com/Probes/
 void probe_getThetaPhi(float u, float v, float& theta, float& phi)
 {
     // u, v in [-1, 1]
@@ -71,6 +73,16 @@ void probe_getThetaPhi(float u, float v, float& theta, float& phi)
 
     theta = atan2(v, u);
     phi = M_PI * sqrt(u * u + v * v);
+}
+
+void probe_getDir(float u, float v, float& dx, float& dy, float& dz)
+{
+    float theta, phi;
+    probe_getThetaPhi(u, v, theta, phi);
+
+    dx = sin(phi) * sin(theta);
+    dy = cos(phi);
+    dz = -sin(phi) * cos(theta);
 }
 
 void probe_getUV(float dx, float dy, float dz, float& u, float& v)
@@ -85,18 +97,71 @@ void probe_getUV(float dx, float dy, float dz, float& u, float& v)
     v = (v + 1.f) / 2.f;
 }
 
-bool SaveEXR(const float* rgb, int width, int height, const char* outfilename);
-
 int main(int argc, char* argv[])
 {
-    const char* input = argv[1];
-    const char* output = argv[2];
-    float* rgba; // width * height * RGBA
-    int width;
-    int height;
+    std::string input, output;
+
+    float* in_rgba; // width * height * RGBA
+    int in_width;
+    int in_height;
+    size_t out_width = 1024;
+    size_t out_height = 512;
+
     const char* err = nullptr;
 
-    int ret = LoadEXR(&rgba, &width, &height, input, &err);
+    void (*source_getUV)(float, float, float, float&, float&) = nullptr;
+    void (*target_getDir)(float, float, float&, float&, float&) = nullptr;
+
+    try {
+        TCLAP::CmdLine cmd("Conversion of envmap parametrizations", ' ', "0.9");
+
+        TCLAP::ValueArg<std::string> sourceArg("s", "source", "Source parametrization (probe or pano)", true, "probe", "string");
+        TCLAP::ValueArg<std::string> targetArg("t", "target", "Target parametrization (probe or pano)", true, "pano", "string");
+        TCLAP::ValueArg<std::string> inputArg("i", "in", "Input image (EXR)", true, "in", "string");
+        TCLAP::ValueArg<std::string> outputArg("o", "out", "Output image (EXR)", true, "out", "string");
+        TCLAP::ValueArg<int> sizeArg("w", "width", "Output image width", false, 512, "Integer");
+
+        cmd.add(sourceArg);
+        cmd.add(targetArg);
+        cmd.add(inputArg);
+        cmd.add(outputArg);
+        cmd.add(sizeArg);
+
+        // Parse the argv array.
+        cmd.parse(argc, argv);
+
+        // Get the value parsed by each arg.
+        std::string sourceParam = sourceArg.getValue();
+        std::string targetParam = targetArg.getValue();
+        input = inputArg.getValue();
+        output = outputArg.getValue();
+
+        if (sourceParam == "probe") {
+            source_getUV = &probe_getUV;
+        } else if (sourceParam == "pano") {
+            source_getUV = &pano_getUV;
+        } else {
+            std::cerr << "Source parametrization is incorrect. It can be only [probe, pano]" << std::endl;
+        }
+
+        if (targetParam == "probe") {
+            target_getDir = &probe_getDir;
+            out_width = sizeArg.getValue();
+            out_height = out_width;
+        } else if (targetParam == "pano") {
+            target_getDir = &pano_getDir;
+            out_width = sizeArg.getValue();
+            out_height = out_width / 2;
+        } else {
+            std::cerr << "Target parametrization is incorrect. It can be only [probe, pano]" << std::endl;
+        }
+
+    } catch (TCLAP::ArgException& e) // catch exceptions
+    {
+        std::cerr << "error: " << e.error() << " for arg " << e.argId() << std::endl;
+    }
+
+    int ret = LoadEXR(&in_rgba, &in_width, &in_height, input.c_str(), &err);
 
     if (ret != TINYEXR_SUCCESS) {
         if (err) {
@@ -107,42 +172,38 @@ int main(int argc, char* argv[])
         return -1;
     }
 
-    const size_t out_width = 1024;
-    const size_t out_height = 512;
-    float* out_rgba = new float[out_width * out_height * 4];
+    float* out_rgb = new float[3 * out_width * out_height];
 
     for (size_t y = 0; y < out_height; y++) {
         float v_target = 1.f - float(y) / float(out_height);
+
         for (size_t x = 0; x < out_width; x++) {
             float u_target = float(x) / float(out_width);
-            float dx, dy, dz;
-            pano_getDir(u_target, v_target, dx, dy, dz);
-
             float u_source, v_source;
-            probe_getUV(dx, dy, dz, u_source, v_source);
+            float dx, dy, dz;
 
-            size_t x_source = u_source * width;
-            size_t y_source = v_source * height;
+            target_getDir(u_target, v_target, dx, dy, dz);
+            source_getUV(dx, dy, dz, u_source, v_source);
+
+            const size_t x_source = u_source * in_width;
+            const size_t y_source = v_source * in_height;
 
             for (int c = 0; c < 3; c++) {
-                out_rgba[4 * (y * out_width + x) + c] = rgba[4 * (y_source * width + x_source) + c];
+                out_rgb[3 * (y * out_width + x) + c] = in_rgba[4 * (y_source * in_width + x_source) + c];
             }
-
-            out_rgba[4 * (y * out_width + x) + 3] = 1.f;
         }
     }
 
-    SaveEXR(out_rgba, out_width, out_height, output);
+    SaveEXR(out_rgb, out_width, out_height, output.c_str());
 
-    delete[] out_rgba;
-
-    free(rgba); // release memory of image data
+    free(in_rgba);
+    delete[] out_rgb;
 
     return 0;
 }
 
 // See `examples/rgbe2exr/` for more details.
-bool SaveEXR(const float* rgba, int width, int height, const char* outfilename)
+bool SaveEXR(const float* rgb, int width, int height, const char* outfilename)
 {
     EXRHeader header;
     InitEXRHeader(&header);
@@ -158,8 +219,8 @@ bool SaveEXR(const float* rgba, int width, int height, const char* outfilename)
     for (size_t c = 0; c < image.num_channels; c++) {
         images[c].resize(width * height);
 
-        for (int i = 0; i < width * height; i++) {
-            images[c][i] = rgba[4 * i + c];
+        for (size_t i = 0; i < width * height; i++) {
+            images[c][i] = rgb[3 * i + c];
         }
     }
 
