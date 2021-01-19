@@ -36,7 +36,7 @@
 bool SaveEXR(const float* rgb, int width, int height, const char* outfilename);
 
 // Parnoramic parametrisation: https://vgl.ict.usc.edu/Data/HighResProbes/
-void pano_getThetaPhi(float u, float v, float& theta, float& phi)
+bool pano_getThetaPhi(float u, float v, float& theta, float& phi)
 {
     // u in [0..2]
     // v in [0..1]
@@ -44,9 +44,11 @@ void pano_getThetaPhi(float u, float v, float& theta, float& phi)
 
     theta = M_PI * (u - 1);
     phi = M_PI * v;
+
+    return true;
 }
 
-void pano_getDir(float u, float v, float& dx, float& dy, float& dz)
+bool pano_getDir(float u, float v, float& dx, float& dy, float& dz)
 {
     float theta, phi;
     pano_getThetaPhi(u, v, theta, phi);
@@ -54,6 +56,8 @@ void pano_getDir(float u, float v, float& dx, float& dy, float& dz)
     dx = sin(phi) * sin(theta);
     dy = cos(phi);
     dz = -sin(phi) * cos(theta);
+
+    return true;
 }
 
 void pano_getUV(float dx, float dy, float dz, float& u, float& v)
@@ -65,24 +69,36 @@ void pano_getUV(float dx, float dy, float dz, float& u, float& v)
 }
 
 // Probe parametrisation: https://www.pauldebevec.com/Probes/
-void probe_getThetaPhi(float u, float v, float& theta, float& phi)
+bool probe_getThetaPhi(float u, float v, float& theta, float& phi)
 {
     // u, v in [-1, 1]
     u = 2.f * u - 1.f;
     v = 2.f * v - 1.f;
 
-    theta = atan2(v, u);
-    phi = M_PI * sqrt(u * u + v * v);
+    if (u*u + v*v < 1.) {
+        theta = atan2(v, u);
+        phi = M_PI * sqrt(u * u + v * v);
+    } else {
+        return false;
+    }
+
+    return true;
 }
 
-void probe_getDir(float u, float v, float& dx, float& dy, float& dz)
+bool probe_getDir(float u, float v, float& dx, float& dy, float& dz)
 {
     float theta, phi;
-    probe_getThetaPhi(u, v, theta, phi);
+    const bool dirExists = probe_getThetaPhi(u, v, theta, phi);
 
-    dx = sin(phi) * sin(theta);
-    dy = cos(phi);
-    dz = -sin(phi) * cos(theta);
+    if (dirExists) {
+        dx = sin(phi) * sin(theta);
+        dy = cos(phi);
+        dz = -sin(phi) * cos(theta);
+    } else {
+        return false;
+    }
+
+    return true;
 }
 
 void probe_getUV(float dx, float dy, float dz, float& u, float& v)
@@ -110,7 +126,7 @@ int main(int argc, char* argv[])
     const char* err = nullptr;
 
     void (*source_getUV)(float, float, float, float&, float&) = nullptr;
-    void (*target_getDir)(float, float, float&, float&, float&) = nullptr;
+    bool (*target_getDir)(float, float, float&, float&, float&) = nullptr;
 
     try {
         TCLAP::CmdLine cmd("Conversion of envmap parametrizations", ' ', "0.9");
@@ -142,6 +158,7 @@ int main(int argc, char* argv[])
             source_getUV = &pano_getUV;
         } else {
             std::cerr << "Source parametrization is incorrect. It can be only [probe, pano]" << std::endl;
+            return -1;
         }
 
         if (targetParam == "probe") {
@@ -154,6 +171,7 @@ int main(int argc, char* argv[])
             out_height = out_width / 2;
         } else {
             std::cerr << "Target parametrization is incorrect. It can be only [probe, pano]" << std::endl;
+            return -1;
         }
 
     } catch (TCLAP::ArgException& e) // catch exceptions
@@ -182,14 +200,22 @@ int main(int argc, char* argv[])
             float u_source, v_source;
             float dx, dy, dz;
 
-            target_getDir(u_target, v_target, dx, dy, dz);
+            const bool dir_exists = target_getDir(u_target, v_target, dx, dy, dz);
             source_getUV(dx, dy, dz, u_source, v_source);
+            
+            if ( dir_exists
+             && u_source >= 0.f && u_source <= 1.f
+             && v_source >= 0.f && v_source <= 1.f) { 
+                const size_t x_source = u_source * (in_width - 1);
+                const size_t y_source = v_source * (in_height - 1);
 
-            const size_t x_source = u_source * in_width;
-            const size_t y_source = v_source * in_height;
-
-            for (int c = 0; c < 3; c++) {
-                out_rgb[3 * (y * out_width + x) + c] = in_rgba[4 * (y_source * in_width + x_source) + c];
+                for (int c = 0; c < 3; c++) {
+                    out_rgb[3 * (y * out_width + x) + c] = in_rgba[4 * (y_source * in_width + x_source) + c];
+                }
+            } else {
+                for (int c = 0; c < 3; c++) {
+                    out_rgb[3 * (y * out_width + x) + c] = 0.f;
+                }
             }
         }
     }
