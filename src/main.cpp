@@ -33,85 +33,11 @@
 #include <tclap/CmdLine.h>
 #include <tinyexr.h>
 
+#include "spheremap.hpp"
+#include "panomap.hpp"
+#include "cubemap.hpp"
+
 bool SaveEXR(const float* rgb, int width, int height, const char* outfilename);
-
-// Parnoramic parametrisation: https://vgl.ict.usc.edu/Data/HighResProbes/
-bool pano_getThetaPhi(float u, float v, float& theta, float& phi)
-{
-    // u in [0..2]
-    // v in [0..1]
-    u *= 2.f;
-
-    theta = M_PI * (u - 1);
-    phi = M_PI * v;
-
-    return true;
-}
-
-bool pano_getDir(float u, float v, float& dx, float& dy, float& dz)
-{
-    float theta, phi;
-    pano_getThetaPhi(u, v, theta, phi);
-
-    dx = sin(phi) * sin(theta);
-    dy = cos(phi);
-    dz = -sin(phi) * cos(theta);
-
-    return true;
-}
-
-void pano_getUV(float dx, float dy, float dz, float& u, float& v)
-{
-    u = 1 + atan2(dx, -dz) / M_PI;
-    v = acos(dy) / M_PI;
-
-    u /= 2.f;
-}
-
-// Probe parametrisation: https://www.pauldebevec.com/Probes/
-bool probe_getThetaPhi(float u, float v, float& theta, float& phi)
-{
-    // u, v in [-1, 1]
-    u = 2.f * u - 1.f;
-    v = 2.f * v - 1.f;
-
-    if (u*u + v*v < 1.) {
-        theta = atan2(v, u);
-        phi = M_PI * sqrt(u * u + v * v);
-    } else {
-        return false;
-    }
-
-    return true;
-}
-
-bool probe_getDir(float u, float v, float& dx, float& dy, float& dz)
-{
-    float theta, phi;
-    const bool dirExists = probe_getThetaPhi(u, v, theta, phi);
-
-    if (dirExists) {
-        dx = sin(phi) * sin(theta);
-        dy = cos(phi);
-        dz = -sin(phi) * cos(theta);
-    } else {
-        return false;
-    }
-
-    return true;
-}
-
-void probe_getUV(float dx, float dy, float dz, float& u, float& v)
-{
-    const float r = (1.f / M_PI) * acos(dz) / sqrt(dx * dx + dy * dy);
-
-    u = dx * r;
-    v = dy * r;
-
-    // remap in 0..1
-    u = (u + 1.f) / 2.f;
-    v = (v + 1.f) / 2.f;
-}
 
 int main(int argc, char* argv[])
 {
@@ -131,8 +57,8 @@ int main(int argc, char* argv[])
     try {
         TCLAP::CmdLine cmd("Conversion of envmap parametrizations", ' ', "0.9");
 
-        TCLAP::ValueArg<std::string> sourceArg("s", "source", "Source parametrization (probe or pano)", true, "probe", "string");
-        TCLAP::ValueArg<std::string> targetArg("t", "target", "Target parametrization (probe or pano)", true, "pano", "string");
+        TCLAP::ValueArg<std::string> sourceArg("s", "source", "Source parametrization (sphere, pano or cubehorizcross)", true, "sphere", "string");
+        TCLAP::ValueArg<std::string> targetArg("t", "target", "Target parametrization (sphere, pano or cubehorizcross)", true, "pano", "string");
         TCLAP::ValueArg<std::string> inputArg("i", "in", "Input image (EXR)", true, "in", "string");
         TCLAP::ValueArg<std::string> outputArg("o", "out", "Output image (EXR)", true, "out", "string");
         TCLAP::ValueArg<int> sizeArg("w", "width", "Output image width", false, 512, "Integer");
@@ -152,25 +78,30 @@ int main(int argc, char* argv[])
         input = inputArg.getValue();
         output = outputArg.getValue();
 
-        if (sourceParam == "probe") {
-            source_getUV = &probe_getUV;
+        if (sourceParam == "sphere") {
+            source_getUV = &sphere_getUV;
         } else if (sourceParam == "pano") {
             source_getUV = &pano_getUV;
+        } else if (sourceParam == "cubehorizcross") {
+            source_getUV = &cubehorizcross_getUV;
         } else {
-            std::cerr << "Source parametrization is incorrect. It can be only [probe, pano]" << std::endl;
+            std::cerr << "Source parametrization is incorrect. It can be only [sphere, pano, cubehorizcross]" << std::endl;
             return -1;
         }
 
-        if (targetParam == "probe") {
-            target_getDir = &probe_getDir;
-            out_width = sizeArg.getValue();
+        out_width = sizeArg.getValue();
+
+        if (targetParam == "sphere") {
+            target_getDir = &sphere_getDir;
             out_height = out_width;
         } else if (targetParam == "pano") {
             target_getDir = &pano_getDir;
-            out_width = sizeArg.getValue();
             out_height = out_width / 2;
+        } else if (targetParam == "cubehorizcross") {
+            target_getDir = &cubehorizcross_getDir;
+            out_height = 3.f/4.f * out_width;
         } else {
-            std::cerr << "Target parametrization is incorrect. It can be only [probe, pano]" << std::endl;
+            std::cerr << "Target parametrization is incorrect. It can be only [sphere, pano, cubehorizcross]" << std::endl;
             return -1;
         }
 
@@ -193,10 +124,10 @@ int main(int argc, char* argv[])
     float* out_rgb = new float[3 * out_width * out_height];
 
     for (size_t y = 0; y < out_height; y++) {
-        float v_target = 1.f - float(y) / float(out_height);
+        float v_target = float(y) / float(out_height);
 
         for (size_t x = 0; x < out_width; x++) {
-            float u_target = float(x) / float(out_width);
+            const float u_target = float(x) / float(out_width);
             float u_source, v_source;
             float dx, dy, dz;
 
