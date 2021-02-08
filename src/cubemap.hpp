@@ -93,24 +93,30 @@ void cube_getUV(float dx, float dy, float dz, int &index, float &u, float &v)
 void cubehorizcross_getUV(float dx, float dy, float dz, float& u, float& v) {
   int index;
 
-  cube_getUV(dx, dy, dz, index, u, v);
+  cube_getUV(-dx, dy, dz, index, u, v);
 
   switch (index) {
-    case 0: u = 1.f/4.f * u + 1.f/2.f; v = 1.f/3.f * v + 1.f/3.f; break;
-    case 1: u = 1.f/4.f * u          ; v = 1.f/3.f * v + 1.f/3.f; break;
-    case 2: u = 1.f/4.f * u + 1.f/4.f; v = 1.f/3.f * v          ; break;
-    case 3: u = 1.f/4.f * u + 1.f/4.f; v = 1.f/3.f * v + 2.f/3.f; break;
-    case 4: u = 1.f/4.f * u + 1.f/4.f; v = 1.f/3.f * v + 1.f/3.f; break;
-    case 5: u = 1.f/4.f * u + 3.f/4.f; v = 1.f/3.f * v + 1.f/3.f; break;
+    case 0: u = 1.f/4.f * u + 1.f/2.f; v = 1.f/3.f * v + 1.f/3.f; break; // Positive X
+    case 1: u = 1.f/4.f * u          ; v = 1.f/3.f * v + 1.f/3.f; break; // Negative X
+    case 2: u = 1.f/4.f * u + 1.f/4.f; v = 1.f/3.f * v + 2.f/3.f; break; // Positive Y
+    case 3: u = 1.f/4.f * u + 1.f/4.f; v = 1.f/3.f * v          ; break; // Negative Y
+    case 4: u = 1.f/4.f * u + 1.f/4.f; v = 1.f/3.f * v + 1.f/3.f; break; // Positive Z
+    case 5: u = 1.f/4.f * u + 3.f/4.f; v = 1.f/3.f * v + 1.f/3.f; break; // Negative Z
   }
+
+  // TODO: Shamefull fix
+  v = 1.f - v;
 }
 
 bool cubehorizcross_getDir(float u, float v, float &dx, float &dy, float &dz) {
   int index;
 
+  // TODO: Shamefull fix
+  v = 1.f - v;
+  
   if (v < 1.f/3.f) {
-    if (u > 1.f/4.f && u < 1.f/2.f) {
-      index = 2;
+    if (u > 1.f/4.f && u < 1.f/2.f) { // Negative Y
+      index = 3; 
       u = 4.f * (u - 1.f/4.f);
       v *= 3.f;
     } else {
@@ -118,8 +124,8 @@ bool cubehorizcross_getDir(float u, float v, float &dx, float &dy, float &dz) {
     }
   }
   else if (v > 2.f/3.f) {
-    if (u > 1.f/4.f && u < 1.f/2.f) {
-      index = 3;
+    if (u > 1.f/4.f && u < 1.f/2.f) { // Positive Y
+      index = 2;
       u = 4.f * (u - 1.f/4.f);
       v = 3.f * (v - 2.f/3.f);
     } else {
@@ -128,16 +134,16 @@ bool cubehorizcross_getDir(float u, float v, float &dx, float &dy, float &dz) {
   }
   else {
     v = 3.f * (v - 1.f/3.f);
-    if (u < 1.f/4.f) {
+    if (u < 1.f/4.f) {              // Negative X
       index = 1;
       u *= 4.f;
-    } else if (u < 1.f/2.f) {
+    } else if (u < 1.f/2.f) {       // Positive Z
       index = 4;
       u = 4.f * (u - 1.f/4.f);
-    } else if (u < 3.f / 4.f) {
+    } else if (u < 3.f / 4.f) {     // Positive X
       index = 0;
       u = 4.f * (u - 1.f / 2.f);
-    } else {
+    } else {                        // Negative Z
       index = 5;
       u = 4.f * (u - 3.f / 4.f);
     }
@@ -145,5 +151,6 @@ bool cubehorizcross_getDir(float u, float v, float &dx, float &dy, float &dz) {
 
   cube_getDir(index, u, v, dx, dy, dz);
 
+  dx = -dx;
   return true;
 }
